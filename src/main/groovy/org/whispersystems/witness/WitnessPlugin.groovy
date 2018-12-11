@@ -26,7 +26,7 @@ class WitnessPlugin implements Plugin<Project> {
      * See https://docs.gradle.org/current/userguide/dependency_cache.html
      */
     static DependencyKey makeKey(String path) {
-        def parts = path.tokenize(System.getProperty('file.separator'))
+        def parts = path.toLowerCase().tokenize(System.getProperty('file.separator'))
         if (parts.size() < 5) throw new AssertionError()
         parts = parts.subList(parts.size() - 5, parts.size())
         return new DependencyKey(parts[0], parts[1], parts[2], parts[4])
@@ -70,7 +70,7 @@ class WitnessPlugin implements Plugin<Project> {
             def dependencies = calculateHashes project
             def dependencyVerifications = new TreeMap<DependencyKey, String>()
             project.dependencyVerification.verify.each { assertion ->
-                def parts = assertion.tokenize(":")
+                def parts = assertion.toLowerCase().tokenize(":")
                 if (parts.size() != 5) {
                     throw new InvalidUserDataException("Invalid or obsolete integrity assertion '${assertion}'")
                 }
