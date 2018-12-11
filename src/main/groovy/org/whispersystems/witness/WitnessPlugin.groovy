@@ -88,11 +88,17 @@ class WitnessPlugin implements Plugin<Project> {
 
         project.task('calculateChecksums').doLast {
             def dependencies = calculateHashes project
-            println "dependencyVerification {"
-            println "    verify = ["
-            dependencies.each { dep -> println "        '${dep.key.all}:${dep.value}'," }
-            println "    ]"
-            println "}"
+            def output = new File('dependency-hashes.gradle')
+            output.withWriter { out ->
+                out.println "dependencyVerification {"
+                out.println "    verify = ["
+                dependencies.each { dep -> 
+                    out.println "        '${dep.key.all}:${dep.value}',"
+                }
+                out.println "    ]"
+                out.println "}"
+            }
+            println output.text
         }
     }
 
