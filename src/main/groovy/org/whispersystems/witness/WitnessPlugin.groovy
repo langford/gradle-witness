@@ -68,6 +68,7 @@ class WitnessPlugin implements Plugin<Project> {
         project.extensions.create("dependencyVerification", WitnessPluginExtension)
         project.afterEvaluate {
             def dependencies = calculateHashes project
+            def dependencyVerifications = new TreeMap<DependencyKey, String>()
             project.dependencyVerification.verify.each { assertion ->
                 def parts = assertion.tokenize(":")
                 if (parts.size() != 5) {
@@ -75,13 +76,19 @@ class WitnessPlugin implements Plugin<Project> {
                 }
                 def (group, name, version, file, expectedHash) = parts
                 def key = new DependencyKey(group, name, version, file)
-                println "Verifying ${key.all}"
-                def hash = dependencies.get key
-                if (hash == null) {
-                    throw new InvalidUserDataException("No dependency for integrity assertion '${assertion}'")
-                }
-                if (hash != expectedHash) {
-                    throw new InvalidUserDataException("Checksum failed for ${key.all}")
+                dependencyVerifications.put key, expectedHash
+            }
+
+            if(dependencyVerifications.size() > 0) {
+                dependencies.each { key, hash ->
+                    println "Verifying ${key.all}"
+                    def expectedHash = dependencyVerifications.get key
+                    if (expectedHash == null) {
+                        throw new InvalidUserDataException("No dependency for integrity assertion '${key.all}'")
+                    }
+                    if (expectedHash != hash) {
+                        throw new InvalidUserDataException("Checksum failed for ${key.all}")
+                    }
                 }
             }
         }
