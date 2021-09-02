@@ -3,7 +3,6 @@ package org.whispersystems.witness
 import org.gradle.api.InvalidUserDataException
 import org.gradle.api.Plugin
 import org.gradle.api.Project
-import org.gradle.api.artifacts.ResolvedArtifact
 
 import java.security.MessageDigest
 
@@ -13,52 +12,135 @@ class WitnessPluginExtension {
 
 class WitnessPlugin implements Plugin<Project> {
 
-    static String calculateSha256(file) {
-        MessageDigest md = MessageDigest.getInstance("SHA-256");
-        file.eachByte 4096, {bytes, size ->
-            md.update(bytes, 0, size);
+    static String calculateSha256(File file) {
+        MessageDigest md = MessageDigest.getInstance("SHA-256")
+        file.eachByte 4096, { bytes, size ->
+            md.update(bytes, 0, size)
         }
-        return md.digest().collect {String.format "%02x", it}.join();
+        return md.digest().collect { String.format "%02x", it }.join()
+    }
+
+    /**
+     * Converts a file path into a DependencyKey, assuming the path ends with the elements
+     * "group/name/version/sha1/file".
+     * See https://docs.gradle.org/current/userguide/dependency_cache.html
+     */
+    static DependencyKey makeKey(String path) {
+        def parts = path.toLowerCase().tokenize(System.getProperty('file.separator'))
+        if (parts.size() < 5) throw new AssertionError()
+        parts = parts.subList(parts.size() - 5, parts.size())
+        return new DependencyKey(parts[0], parts[1], parts[2], parts[4])
+    }
+
+    static Map<DependencyKey, String> calculateHashes(Project project) {
+	    def excludedProp = project.properties.get('noWitness')
+	    def excluded = excludedProp == null ? [] : excludedProp.split(',')
+        def projectPath = project.file('.').canonicalPath
+        def dependencies = new TreeMap<DependencyKey, String>()
+        def addDependencies = {
+	        def scopedName = "${project.name}:${it.name}"
+	        // Skip excluded configurations
+	        if (excluded.contains(it.name) || excluded.contains(scopedName)) {
+		        println "Skipping excluded configuration ${scopedName}"
+		        return
+	        }
+            // Skip unresolvable configurations
+            if (it.metaClass.respondsTo(it, 'isCanBeResolved') ? it.isCanBeResolved() : true) {
+                it.fileCollection { dep ->
+                    // Skip dependencies on other projects
+                    dep.version != 'unspecified'
+                }.each {
+                    // Skip files within project directory
+                    if (!it.canonicalPath.startsWith(projectPath)) {
+                        def key = makeKey(it.path)
+                        if (!dependencies.containsKey(key))
+                            dependencies.put key, calculateSha256(it)
+                    }
+                }
+            }
+        }
+        project.configurations.each addDependencies
+        project.buildscript.configurations.each addDependencies
+        return dependencies
     }
 
     void apply(Project project) {
         project.extensions.create("dependencyVerification", WitnessPluginExtension)
         project.afterEvaluate {
-            project.dependencyVerification.verify.each {
-                assertion ->
-                    List  parts  = assertion.tokenize(":")
-                    String group = parts.get(0)
-                    String name  = parts.get(1)
-                    String hash  = parts.get(2)
+            def dependencies = calculateHashes project
+            def dependencyVerifications = new TreeMap<DependencyKey, String>()
+            project.dependencyVerification.verify.each { assertion ->
+                def parts = assertion.toLowerCase().tokenize(":")
+                if (parts.size() != 5) {
+                    throw new InvalidUserDataException("Invalid or obsolete integrity assertion '${assertion}'")
+                }
+                def (group, name, version, file, expectedHash) = parts
+                def key = new DependencyKey(group, name, version, file)
+                dependencyVerifications.put key, expectedHash
+            }
 
-                    ResolvedArtifact dependency = project.configurations.compile.resolvedConfiguration.resolvedArtifacts.find {
-                        return it.name.equals(name) && it.moduleVersion.id.group.equals(group)
+            if(dependencyVerifications.size() > 0) {
+                dependencies.each { key, hash ->
+                    println "Verifying ${key.all}"
+                    def expectedHash = dependencyVerifications.get key
+                    if (expectedHash == null) {
+                        throw new InvalidUserDataException("No dependency for integrity assertion '${key.all}'")
                     }
-
-                    println "Verifying " + group + ":" + name
-
-                    if (dependency == null) {
-                        throw new InvalidUserDataException("No dependency for integrity assertion found: " + group + ":" + name)
+                    if (expectedHash != hash) {
+                        throw new InvalidUserDataException("Checksum failed for ${key.all}")
                     }
-
-                    if (!hash.equals(calculateSha256(dependency.file))) {
-                        throw new InvalidUserDataException("Checksum failed for " + assertion)
-                    }
+                }
             }
         }
 
-        project.task('calculateChecksums') << {
-            println "dependencyVerification {"
-            println "    verify = ["
-
-            project.configurations.compile.resolvedConfiguration.resolvedArtifacts.each {
-                dep ->
-                    println "        '" + dep.moduleVersion.id.group+ ":" + dep.name + ":" + calculateSha256(dep.file) + "',"
+        project.task('calculateChecksums').doLast {
+            def dependencies = calculateHashes project
+            def output = new File('dependency-hashes.gradle')
+            output.withWriter { out ->
+                out.println "dependencyVerification {"
+                out.println "    verify = ["
+                dependencies.each { dep -> 
+                    out.println "        '${dep.key.all}:${dep.value}',"
+                }
+                out.println "    ]"
+                out.println "}"
             }
-
-            println "    ]"
-            println "}"
+            println output.text
         }
+    }
+
+    static class DependencyKey implements Comparable<DependencyKey> {
+
+        final String group, name, version, file, all
+
+        DependencyKey(group, name, version, file) {
+            this.group = group
+            this.name = name
+            this.version = version
+            this.file = file
+            all = "${group}:${name}:${version}:${file}".toString()
+        }
+
+        @Override
+        boolean equals(Object o) {
+            if (o instanceof DependencyKey) return ((DependencyKey) o).all == all
+            return false
+        }
+
+        @Override
+        int hashCode() {
+            return all.hashCode()
+        }
+
+        @Override
+        int compareTo(DependencyKey k) {
+            return all <=> k.all
+        }
+
+	    @Override
+	    String toString() {
+		    return "${group}:${name}:${version}"
+	    }
     }
 }
 
